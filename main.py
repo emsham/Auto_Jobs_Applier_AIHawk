@@ -16,6 +16,9 @@ from src.aihawk_bot_facade import AIHawkBotFacade
 from src.aihawk_job_manager import AIHawkJobManager
 from src.job_application_profile import JobApplicationProfile
 from loguru import logger
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 # Suppress stderr
 sys.stderr = open(os.devnull, 'w')
@@ -38,7 +41,7 @@ class ConfigValidator:
         except FileNotFoundError:
             raise ConfigError(f"File not found: {yaml_path}")
     
-    
+    @staticmethod
     def validate_config(config_yaml_path: Path) -> dict:
         parameters = ConfigValidator.validate_yaml_file(config_yaml_path)
         required_keys = {
@@ -99,8 +102,6 @@ class ConfigValidator:
 
         return parameters
 
-
-
     @staticmethod
     def validate_secrets(secrets_yaml_path: Path) -> tuple:
         secrets = ConfigValidator.validate_yaml_file(secrets_yaml_path)
@@ -150,7 +151,6 @@ class FileManager:
 
 def init_browser() -> webdriver.Chrome:
     try:
-        
         options = chrome_browser_options()
         service = ChromeService(ChromeDriverManager().install())
         return webdriver.Chrome(service=service, options=options)
@@ -186,10 +186,12 @@ def create_and_run_bot(parameters, llm_api_key):
     except Exception as e:
         raise RuntimeError(f"Error running the bot: {str(e)}")
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
 
-@click.command()
-@click.option('--resume', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path), help="Path to the resume PDF file")
-def main(resume: Path = None):
+@app.route('/run', methods=['POST'])
+def run_bot():
     try:
         data_folder = Path("data_folder")
         secrets_file, config_file, plain_text_resume_file, output_folder = FileManager.validate_data_folder(data_folder)
@@ -197,25 +199,27 @@ def main(resume: Path = None):
         parameters = ConfigValidator.validate_config(config_file)
         llm_api_key = ConfigValidator.validate_secrets(secrets_file)
         
+        resume = request.json.get('resume')
+        if resume:
+            resume = Path(resume)
+        
         parameters['uploads'] = FileManager.file_paths_to_dict(resume, plain_text_resume_file)
         parameters['outputFileDirectory'] = output_folder
         
         create_and_run_bot(parameters, llm_api_key)
+        return jsonify({"status": "success", "message": "Bot run completed successfully"}), 200
     except ConfigError as ce:
         logger.error(f"Configuration error: {str(ce)}")
-        logger.error(f"Refer to the configuration guide for troubleshooting: https://github.com/feder-cr/AIHawk_AIHawk_automatic_job_application/blob/main/readme.md#configuration {str(ce)}")
+        return jsonify({"status": "error", "message": str(ce)}), 400
     except FileNotFoundError as fnf:
         logger.error(f"File not found: {str(fnf)}")
-        logger.error("Ensure all required files are present in the data folder.")
-        logger.error("Refer to the file setup guide: https://github.com/feder-cr/AIHawk_AIHawk_automatic_job_application/blob/main/readme.md#configuration")
+        return jsonify({"status": "error", "message": str(fnf)}), 404
     except RuntimeError as re:
-
         logger.error(f"Runtime error: {str(re)}")
-
-        logger.error("Refer to the configuration and troubleshooting guide: https://github.com/feder-cr/AIHawk_AIHawk_automatic_job_application/blob/main/readme.md#configuration")
+        return jsonify({"status": "error", "message": str(re)}), 500
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
-        logger.error("Refer to the general troubleshooting guide: https://github.com/feder-cr/AIHawk_AIHawk_automatic_job_application/blob/main/readme.md#configuration")
+        return jsonify({"status": "error", "message": "An unexpected error occurred"}), 500
 
 if __name__ == "__main__":
-    main()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
